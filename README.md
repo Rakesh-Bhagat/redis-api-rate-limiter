@@ -1,13 +1,27 @@
 # Redis Rate Limiter
 
-A small Express + TypeScript project that implements two rate-limiting algorithms as middleware, backed by Redis.
+A small Express + TypeScript project that implements four rate-limiting algorithms as middleware, backed by Redis.
 
 ## Algorithms
 
-| Route    | Middleware           | Behavior                                                                   |
-| -------- | -------------------- | -------------------------------------------------------------------------- |
-| `/`      | `fixedRateLimiter`   | Fixed window: max 10 requests per IP per 60 seconds (limit is configurable)                        |
-| `/token` | `tokenBucketLimiter` | Token bucket: capacity 10, refills 2 tokens/second, per IP (limit is configurable)                 |
+| Route             | Middleware              | Behavior                                                                                                   |
+| ----------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `/`               | `fixedRateLimiter`      | Fixed window: max 10 requests per IP per 60 seconds (limit is configurable)                                |
+| `/token`          | `tokenBucketLimiter`    | Token bucket: capacity 10, refills 2 tokens/second, per IP (limit is configurable)                         |
+| `/slidinglog`     | `slidingLogLimiter`     | Sliding window log: max 5 requests per IP in any rolling 60 seconds (limit and window are configurable)    |
+| `/slidingcounter` | `slidingCounterLimiter` | Sliding window counter: max 10 requests per IP in a rolling 60 seconds, counted in 10 second sub-windows   |
+
+### Sliding window log
+
+Stores one entry per request in a Redis sorted set, scored by timestamp in milliseconds. On each request, entries older than the window are removed, the remaining entries are counted, and the request is allowed only if the count is below the limit. It is exact, but memory grows with the number of requests in the window.
+
+`slidingLogLimiter(maxRequest, intervalSeconds)`
+
+### Sliding window counter
+
+Splits the window into fixed sub-windows and keeps one counter per sub-window. A request is allowed if the sum of the counters covering the last window is below the limit. It uses much less memory than the log, but it is an approximation: the error is at most one sub-window of traffic, and a smaller sub-window is more accurate at the cost of more keys.
+
+`slidingCounterLimiter(limit, windowSizeSeconds, subWindowSizeSeconds)`
 
 Requests over the limit get a `429` response: `{ "message": "too many requests" }`.
 
@@ -20,6 +34,8 @@ src/
   middleware/
     fixedWindowLimiter.ts        # Fixed window limiter (INCR + EXPIRE)
     tokenBucketLimiter.ts        # Token bucket limiter (hash in Redis)
+    slidingWindowLog.ts          # Sliding window log limiter (sorted set)
+    slidingWindowCounter.ts      # Sliding window counter limiter (one counter key per sub-window)
 ```
 
 ## Requirements
@@ -49,11 +65,15 @@ The server listens on port `8000`.
 ```bash
 curl http://localhost:8000/        # fixed window
 curl http://localhost:8000/token   # token bucket
+curl http://localhost:8000/slidinglog      # sliding window log
+curl http://localhost:8000/slidingcounter  # sliding window counter
 ```
 
-Send more than 10 requests quickly and you will start getting `429` responses.
+Send requests quickly past a route's limit and you will start getting `429` responses.
 
 ## Redis keys
 
 - `fixed:<ip>`: request counter with a 60 second TTL
 - `bucket:<ip>`: hash with `availableToken` and `lastRefillTime`
+- `slidingLog<ip>`: sorted set, one `<timestamp>-<random>` member per request, scored by timestamp
+- `slidingCounter<ip>:<bucket>`: request counter for one sub-window (`bucket` is `floor(now / subWindowMs)`), expires once it leaves the window
