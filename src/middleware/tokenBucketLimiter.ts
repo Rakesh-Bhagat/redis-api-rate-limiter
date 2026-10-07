@@ -23,8 +23,11 @@ export function tokenBucketLimiter(capacity: number, refillRate: number) {
         const token = Math.min(capacity, availableToken+newtoken)
 
         if (token >= 1) {
-            await client.hSet(key, { availableToken: token - 1, lastRefillTime: Date.now()})
-            await client.expire(key, (capacity/refillRate) + 5)
+            await client
+            .multi()
+            .hSet(key, { availableToken: token - 1, lastRefillTime: Date.now()})
+            .expire(key, (capacity/refillRate) + 5)
+            .exec()
             return next()
         }
 
