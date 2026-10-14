@@ -4,6 +4,7 @@ import { fixedRateLimiter } from "./middleware/fixedWindowLimiter.js"
 import { ConnectRedis } from "./lib/redis.js"
 import { slidingLogLimiter } from "./middleware/slidingWindowLog.js"
 import { slidingCounterLimiter } from "./middleware/slidingWindowCounter.js"
+import { leakybucketLimiter } from "./middleware/leakyBucketLimiter.js"
 const app = express()
 await ConnectRedis()
 
@@ -18,6 +19,10 @@ app.get("/slidinglog",slidingLogLimiter(5, 60), async(req: Request, res: Respons
 })
 
 app.get("/slidingcounter",slidingCounterLimiter(10, 60,10), async(req: Request, res: Response) => {
+    return res.json({message: "passed"})
+})
+
+app.get("/leaky", leakybucketLimiter(10,1), async(req: Request, res: Response) =>{
     return res.json({message: "passed"})
 })
 app.listen(8000,(e)=>{if (e) console.log(e)

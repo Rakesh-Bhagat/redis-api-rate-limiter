@@ -1,6 +1,6 @@
 # Redis Rate Limiter
 
-A small Express + TypeScript project that implements four rate-limiting algorithms as middleware, backed by Redis.
+A small Express + TypeScript project that implements five rate-limiting algorithms as middleware, backed by Redis.
 
 ## Algorithms
 
@@ -8,6 +8,7 @@ A small Express + TypeScript project that implements four rate-limiting algorith
 | ----------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `/`               | `fixedRateLimiter`      | Fixed window: max 10 requests per IP per 60 seconds (limit is configurable)                                |
 | `/token`          | `tokenBucketLimiter`    | Token bucket: capacity 10, refills 2 tokens/second, per IP (limit is configurable)                         |
+| `/leaky`          | `leakybucketLimiter`    | Leaky bucket: each request adds 1 to a bucket that leaks at a fixed rate per second, per IP                |
 | `/slidinglog`     | `slidingLogLimiter`     | Sliding window log: max 5 requests per IP in any rolling 60 seconds (limit and window are configurable)    |
 | `/slidingcounter` | `slidingCounterLimiter` | Sliding window counter: max 10 requests per IP in a rolling 60 seconds, counted in 10 second sub-windows   |
 
@@ -22,6 +23,12 @@ Keeps one counter per IP. The first request creates the counter with a 60 second
 Each IP has a bucket that holds up to `capacity` tokens and refills continuously at `refillRate` tokens per second. Every request spends one token, and a request is rejected when less than one token is available. The state is a hash with the current token count and the last refill time, and tokens are added lazily on each request based on the elapsed time. It allows short bursts up to the bucket capacity while enforcing a steady average rate.
 
 `tokenBucketLimiter(capacity, refillRate)`
+
+### Leaky bucket
+
+Each IP has a bucket with a `level` that holds up to `capacity` and drains continuously at `leakRate` units per second. Every request adds 1 to the level, and a request is rejected if that would push the level above `capacity`. The state is a hash with the current level and the last leak time, and the leak is applied lazily on each request based on the elapsed time. Unlike the token bucket it smooths traffic toward a steady rate. It throws at startup if `capacity` or `leakRate` is not greater than zero, and it fails open (lets the request through and logs the error) if Redis errors. The read and write are not atomic, so concurrent requests from the same IP can race.
+
+`leakybucketLimiter(capacity, leakRate)`
 
 ### Sliding window log
 
@@ -46,6 +53,7 @@ src/
   middleware/
     fixedWindowLimiter.ts        # Fixed window limiter (INCR + EXPIRE)
     tokenBucketLimiter.ts        # Token bucket limiter (hash in Redis)
+    leakyBucketLimiter.ts        # Leaky bucket limiter (hash in Redis)
     slidingWindowLog.ts          # Sliding window log limiter (sorted set)
     slidingWindowCounter.ts      # Sliding window counter limiter (one counter key per sub-window)
 ```
@@ -77,6 +85,7 @@ The server listens on port `8000`.
 ```bash
 curl http://localhost:8000/        # fixed window
 curl http://localhost:8000/token   # token bucket
+curl http://localhost:8000/leaky   # leaky bucket
 curl http://localhost:8000/slidinglog      # sliding window log
 curl http://localhost:8000/slidingcounter  # sliding window counter
 ```
@@ -87,5 +96,6 @@ Send requests quickly past a route's limit and you will start getting `429` resp
 
 - `fixed:<ip>`: request counter with a 60 second TTL
 - `bucket:<ip>`: hash with `availableToken` and `lastRefillTime`
+- `leaky:<ip>`: hash with `level` and `lastLeakTime`
 - `slidingLog<ip>`: sorted set, one `<timestamp>-<random>` member per request, scored by timestamp
 - `slidingCounter<ip>:<bucket>`: request counter for one sub-window (`bucket` is `floor(now / subWindowMs)`), expires once it leaves the window
